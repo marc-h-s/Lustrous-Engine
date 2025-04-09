@@ -11,3 +11,11 @@ for the Vulkan API. The program currently initializes the API and only implement
 
 The vertex data and vertex color data is temporarily stored directly in the vertex shader to simplify development during this demo.
 Additionally, many features within the API are disabled. such as multisampling.
+
+Further updates to this application includes suppoprt for: 
+- Lighting
+- Shadows
+- Textures
+- Mipmaps
+- Model Loading
+- And more
