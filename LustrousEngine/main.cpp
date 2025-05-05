@@ -1,10 +1,12 @@
 /* Author: Marc H S 
- * Date: 08-04-2025
+ * Date: 18-04-2025
  * Version: 0.10
  * 
  * Application Information: Initialization of Vulkan.
  * Supported hardware is queried, extension and queue families are
  * checked.
+ * 
+ * Application Functionality: Draws a triangle to a window.
  * 
  * References: Vulkan Tutorial by Alexander Overvoode 
  * provides instructions on the initial setup of the engine.
@@ -25,6 +27,9 @@
 #include <cstdint>
 #include <limits>
 #include <algorithm>
+
+#include <glm/glm.hpp>
+#include <array>
 
 // Window dimensions
 const uint32_t WIDTH = 800;
@@ -74,6 +79,7 @@ void DestroyDebugUtilsMessengerEXT(VkInstance instance,
 	}
 }
 
+// Reads data from file and returns the content.
 static std::vector<char> readFile(const std::string& filename) {
 	
 	std::ifstream file(filename, std::ios::ate | std::ios::binary);
@@ -93,7 +99,6 @@ static std::vector<char> readFile(const std::string& filename) {
 	return buffer;
 }
 
-
 // Contains the queue family.
 struct QueueFamilyIndices {
 	std::optional<uint32_t> graphicsFamily;
@@ -110,6 +115,50 @@ struct SwapChainSupportDetails {
 	std::vector<VkSurfaceFormatKHR> formats;
 	std::vector<VkPresentModeKHR> presentModes;
 };
+
+// Contains the attributes used in the vertex shader.
+struct Vertex {
+	glm::vec2 pos;
+	glm::vec3 color;
+
+	// Describes the rate to load data from memory throughout the vertices. Specifies
+	// the number of bytes between data entries, and to move to the next data entry
+	// after each vertex.
+	static VkVertexInputBindingDescription getBindingDescription() {
+		VkVertexInputBindingDescription bindingDescription{};
+		bindingDescription.binding = 0;
+		bindingDescription.stride = sizeof(Vertex);
+		bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+		return bindingDescription;
+	}
+
+	// Describes how to extract a vertex attribute from vertex data
+	// originating from a binding description.
+	static std::array<VkVertexInputAttributeDescription, 2> getAttributeDescriptions() {
+		std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{};
+		// Vertex position attribute description.
+		attributeDescriptions[0].binding = 0;
+		attributeDescriptions[0].location = 0;
+		attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;
+		attributeDescriptions[0].offset = offsetof(Vertex, pos);
+		// Color attribute description.
+		attributeDescriptions[1].binding = 0;
+		attributeDescriptions[1].location = 1;
+		attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+		attributeDescriptions[1].offset = offsetof(Vertex, color);
+
+		return attributeDescriptions;
+	}
+};
+
+// Vertex data for the vertex shader (interleaving vertex attributes).
+const std::vector<Vertex> vertices = { 
+	{{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+	{{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
+	{{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
+};
+
 
 class HelloTriangleApplication {
 public:
@@ -151,6 +200,9 @@ private:
 
 	bool framebufferResized = false;
 
+	VkBuffer vertexBuffer;
+	VkDeviceMemory vertexBufferMemory;
+
 	void initWindow() {
 		glfwInit();
 
@@ -168,7 +220,8 @@ private:
 		app->framebufferResized = true;
 	}
 
-
+	// Initializes vulkan functions to draw and present to screen,
+	// which check for hardware compatibility.
 	void initVulkan() {
 		createInstance();
 		setupDebugMessenger();
@@ -181,10 +234,87 @@ private:
 		createGraphicsPipeline();
 		createFramebuffers();
 		createCommandPool();
+		createVertexBuffer();
 		createCommandBuffers();
 		createSyncObjects();
 	}
 
+	void createBuffer() {
+
+	}
+
+	// Creates a buffer for vertex data.
+	void createVertexBuffer() {
+		VkBufferCreateInfo bufferInfo{};
+		bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		// Calculates the size of the vertex data.
+		bufferInfo.size = sizeof(vertices[0]) * vertices.size();
+		bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+		// The buffer will only be used from the graphics queue.
+		bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+		if (vkCreateBuffer(device, &bufferInfo, nullptr, &vertexBuffer)
+			!= VK_SUCCESS) {
+			throw std::runtime_error("failed to create vertex buffer!");
+		}
+
+		// Begin allocating memory for the vertex buffer.
+		VkMemoryRequirements memRequirements;
+		vkGetBufferMemoryRequirements(device, vertexBuffer,
+			&memRequirements);
+
+		VkMemoryAllocateInfo allocInfo{};
+		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		allocInfo.allocationSize = memRequirements.size;
+		allocInfo.memoryTypeIndex =
+			findMemoryType(memRequirements.memoryTypeBits,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+				VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+		if (vkAllocateMemory(device, &allocInfo, nullptr,
+			&vertexBufferMemory) != VK_SUCCESS) {
+			throw std::runtime_error("failed to allocate vertex buffer memory!");
+		}
+
+		// Binds the vertex buffer to the memory allocated above.
+		vkBindBufferMemory(device, vertexBuffer, vertexBufferMemory, 0);
+
+		// Begin filling vetex buffer with data.
+		void* data;
+		// Maps the buffer memory into CPU accessible memory
+		vkMapMemory(device, vertexBufferMemory, 0, bufferInfo.size, 0,
+			&data);
+		// Copies the vertex data into the mapped memory.
+		memcpy(data, vertices.data(), (size_t)bufferInfo.size);
+		// Ummaps the memory.
+		vkUnmapMemory(device, vertexBufferMemory);
+	}
+
+	// Finds the correct memory type from the physical device that meets the
+	// requirements of the the buffer and the application.
+	uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags
+		properties) {
+		VkPhysicalDeviceMemoryProperties memProperties;
+		// Returns an array of memory properties structs, containing the heaps 
+		// and properties of the memory.
+		vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+
+		// Iterates through the memory properties according to the typeFilter and
+		// its properties.
+		for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+			if ((typeFilter & (1 << i)) &&
+				(memProperties.memoryTypes[i].propertyFlags & properties) ==
+				properties){
+				return i;
+			}
+		}
+
+		throw std::runtime_error("failed to find suitable memory type!");
+	}
+
+
+	// The graphics pipeline consists of the multiple shader stages and layouts.
+	// The vertex shader and fragment shaders are created in this order.
 	void createGraphicsPipeline() {
 		auto vertShaderCode = readFile("shaders/vert.spv");
 		auto fragShaderCode = readFile("shaders/frag.spv");
@@ -216,10 +346,18 @@ private:
 		VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
 		vertexInputInfo.sType =
 			VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-		vertexInputInfo.vertexBindingDescriptionCount = 0;
-		vertexInputInfo.pVertexBindingDescriptions = nullptr;
-		vertexInputInfo.vertexAttributeDescriptionCount = 0;
-		vertexInputInfo.pVertexAttributeDescriptions = nullptr;
+
+		// The vertex attributes are retrived from the vertex struct, then
+		// are passed into the vertexInputInfo struct
+		auto bindingDescription = Vertex::getBindingDescription();
+		auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
+		vertexInputInfo.vertexBindingDescriptionCount = 1;
+		vertexInputInfo.vertexAttributeDescriptionCount =
+			static_cast<uint32_t>(attributeDescriptions.size());
+		vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+		vertexInputInfo.pVertexAttributeDescriptions =
+			attributeDescriptions.data();
 
 		VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
 		inputAssembly.sType =
@@ -338,6 +476,9 @@ private:
 		vkDestroyShaderModule(device, vertShaderModule, nullptr);
 	}
 
+	// The renderpass uses attachments that contain information on the color and depth
+	// buffers, the number of samples and its how its contents should be handled while
+	// rendering.
 	void createRenderPass() {
 		VkAttachmentDescription colorAttachment{};
 		colorAttachment.format = swapChainImageFormat;
@@ -400,6 +541,8 @@ private:
 		return shaderModule;
 	}
 
+	// Creates imagesviews in which the graphics device will draw to. Contains
+	// the image format and properties.
 	void createImageViews() {
 		swapChainImageViews.resize(swapChainImages.size());
 
@@ -427,6 +570,8 @@ private:
 		}
 	}
 
+	// Creates a swap chain with a queue of images that are waiting to be presented.
+	// The maximum number of images is set by maxImageCount.
 	void createSwapChain() {
 		SwapChainSupportDetails swapChainSupport =
 			querySwapChainSupport(physicalDevice);
@@ -494,6 +639,8 @@ private:
 		swapChainExtent = extent;
 	}
 
+	// The swap chain is recreated when the window is resized. It will
+	// retreive the framebuffer size after resizing has been completed.
 	void recreateSwapChain() {
 		int width = 0, height = 0;
 
@@ -513,7 +660,7 @@ private:
 		createFramebuffers();
 	}
 
-
+	// Each framebuffer and imageview is destroyed before the swapchain.
 	void cleanupSwapChain() {
 		for (auto framebuffer : swapChainFramebuffers) {
             vkDestroyFramebuffer(device, framebuffer, nullptr);
@@ -526,11 +673,11 @@ private:
 		vkDestroySwapchainKHR(device, swapChain, nullptr);
 	}
 
+	// Creates a framebuffer from the swapchain image views,
 	void createFramebuffers() {
 		swapChainFramebuffers.resize(swapChainImageViews.size());
 
 		for (size_t i = 0; i < swapChainImageViews.size(); i++) {
-			
 			VkImageView attachments[] = {
 				swapChainImageViews[i]
 			};
@@ -553,6 +700,7 @@ private:
 
 	}
 
+	// Creates a window that vulkan will use to present.
 	void createSurface() {
 		if (glfwCreateWindowSurface(instance, window, nullptr, &surface)
 			!= VK_SUCCESS) {
@@ -586,7 +734,7 @@ private:
 		}
 	}
 
-	// Creates a logical device that interfaces with the physical devices
+	// Creates a logical device that interfaces with the physical devices.
 	void createLogicalDevice() {
 		QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
 
@@ -631,6 +779,8 @@ private:
 		vkGetDeviceQueue(device, indices.presentFamily.value(), 0, &presentQueue);
 	}
 
+	// Checks if the physical device extension supports. This engine requires the use of
+	// swap chains.
 	bool isDeviceSuitable(VkPhysicalDevice device) {
 		QueueFamilyIndices indices = findQueueFamilies(device);
 
@@ -648,6 +798,7 @@ private:
 		return indices.isComplete() && extensionsSupported && swapChainAdequate;
 	}
 
+	// Checks the physical device's extension support and stores them in a vector.
 	bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
 		uint32_t extensionCount;
 		vkEnumerateDeviceExtensionProperties(device, nullptr,
@@ -739,6 +890,7 @@ private:
 		return details;
 	}
 
+	// Creates command pools in which command buffers are allocated from.
 	void createCommandPool() {
 		QueueFamilyIndices queueFamilyIndices =
 			findQueueFamilies(physicalDevice);
@@ -754,6 +906,8 @@ private:
 		}
 	}
 
+	// Creates command buffers that record commands that are submitted to the
+	// device for execution.
 	void createCommandBuffers() {
 		commandBuffers.resize(MAX_FRAMES_IN_FLIGHT);
 
@@ -768,6 +922,11 @@ private:
 			throw std::runtime_error("failed to allocate command buffers!");
 		}
 	}
+
+	// Records commands that are submitted to the queue of the device. Consists of
+	// command buffer begin info, render pass info, and viewport info. Binds the render
+	// pass info, sets the viewport and scissor info, then exexutes the draw command
+	// before ending the render pass.
 
 	void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
 		VkCommandBufferBeginInfo beginInfo{};
@@ -796,6 +955,12 @@ private:
 		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
 			graphicsPipeline);
 
+		// Begin binding the vertex buffer.
+		VkBuffer vertexBuffers[] = { vertexBuffer };
+		VkDeviceSize offsets[] = { 0 };
+
+		vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+
 		VkViewport viewport{};
 		viewport.x = 0.0f;
 		viewport.y = 0.0f;
@@ -810,16 +975,19 @@ private:
 		scissor.extent = swapChainExtent;
 		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
-		vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+		vkCmdDraw(commandBuffer, static_cast<uint32_t>(vertices.size()), 1,
+			0, 0);
 
 		vkCmdEndRenderPass(commandBuffer);
 
 		if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
 			throw std::runtime_error("failed to record command buffer!");
 		}
-
 	}
 
+	// Draws to a current frame, synchronizes work completed betweent the CPU and GPU through the
+	// use of fences. Semahpores are used to prevent the overwriting of unpresented images in the buffer
+	// with new data.
 	void drawFrame() {
 		vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
 
@@ -911,7 +1079,8 @@ private:
 		}
 	}
 
-	// TODO: Comment (Surface Format)
+	// Sets the surface format to SRGB if the device supports the SRGB 
+	// color space (VK_COLOR_SPACE_SRGB_NONLINEAR_KHR).
 	VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats) {
 		for (const auto& availableFormat : availableFormats) {
 			if (availableFormat.format == VK_FORMAT_B8G8R8A8_SRGB &&
@@ -925,6 +1094,8 @@ private:
 		return availableFormats[0];
 	}
 
+	// Sets the present mode to mailbox, specifying that the presentation engine
+	// will wait for the next vertical blank before updating the image.
 	VkPresentModeKHR chooseSwapPresentMode(const
 		std::vector<VkPresentModeKHR>& availablePresentModes) {
 
@@ -938,6 +1109,7 @@ private:
 
 	}
 
+	// Sets the extent size to the framebuffer size.
 	VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR&
 		capabilities) {
 
@@ -1008,8 +1180,13 @@ private:
 		vkDeviceWaitIdle(device);
 	}
 
+	// Destroys data used throughout the program. Data destruction must be done
+	// in order to avoid errors and/or crashes (created first, last destroyed).
 	void cleanup() {
 		cleanupSwapChain();
+
+		vkDestroyBuffer(device, vertexBuffer, nullptr);
+		vkFreeMemory(device, vertexBufferMemory, nullptr);
 
 		vkDestroyPipeline(device, graphicsPipeline, nullptr);
 		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
@@ -1041,6 +1218,7 @@ private:
 		glfwTerminate();
 	}
 
+	// Creates an instance containing the application name, API version, and extension info.
 	void createInstance() {
 		if (enableValidationLayers && !checkValidationLayerSupport()) {
 			throw std::runtime_error("Validation layers requested, but not available!");
@@ -1092,7 +1270,7 @@ private:
 		}
 	}
 
-	// Retrieves validation layer list from the Vulkan Driver
+	// Retrieves validation layer list from the Vulkan Driver.
 	bool checkValidationLayerSupport() {
 		uint32_t layerCount;
 		vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
@@ -1118,6 +1296,8 @@ private:
 		return true;
 	}
 
+	// Retreives the array of Vulkan instance extension names required by GLFW
+	// to create Vulkan surfaces for GLFW windows.
 	std::vector<const char*> getRequiredExtensions() {
 		uint32_t glfwExtensionCount = 0;
 		const char** glfwExtensions;
