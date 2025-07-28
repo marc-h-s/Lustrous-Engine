@@ -14,6 +14,7 @@
  */
 
 #define GLFW_INCLUDE_VULKAN
+#define GLM_FORCE_RADIANS
 #include <GLFW/glfw3.h>
 
 #include <iostream>
@@ -29,7 +30,10 @@
 #include <algorithm>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <array>
+
+#include <chrono>
 
 // Window dimensions
 const uint32_t WIDTH = 800;
@@ -37,7 +41,6 @@ const uint32_t HEIGHT = 600;
 
 // Frames computed simultaneously
 const int MAX_FRAMES_IN_FLIGHT = 2;
-uint32_t currentFrame = 0;
 
 const std::vector<const char*> validationLayers = {
 	"VK_LAYER_KHRONOS_validation"
@@ -152,6 +155,12 @@ struct Vertex {
 	}
 };
 
+struct UniformBufferObject {
+	glm::mat4 model;
+	glm::mat4 view;
+	glm::mat4 proj;
+};
+
 // Vertex data for the vertex shader (interleaving vertex attributes).
 const std::vector<Vertex> vertices = { 
 	{{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
@@ -192,6 +201,7 @@ private:
 	std::vector<VkImageView> swapChainImageViews;
 
 	VkRenderPass renderPass;
+	VkDescriptorSetLayout descriptorSetLayout;
 	VkPipelineLayout pipelineLayout;
 	VkPipeline graphicsPipeline;
 
@@ -202,6 +212,7 @@ private:
 	std::vector<VkSemaphore> imageAvailableSemaphores;
 	std::vector<VkSemaphore> renderFinishedSemaphores;
 	std::vector<VkFence> inFlightFences;
+	uint32_t currentFrame = 0;
 
 	bool framebufferResized = false;
 
@@ -209,6 +220,12 @@ private:
 	VkDeviceMemory vertexBufferMemory;
 	VkBuffer indexBuffer;
 	VkDeviceMemory indexBufferMemory;
+
+	std::vector<VkBuffer> uniformBuffers;
+	std::vector<VkDeviceMemory> uniformBuffersMemory;
+	std::vector<void*> uniformBuffersMapped;
+
+	VkDescriptorPool descriptorPool;
 
 	void initWindow() {
 		glfwInit();
@@ -238,11 +255,14 @@ private:
 		createSwapChain();
 		createImageViews();
 		createRenderPass();
+		createDescriptorSetLayout();
 		createGraphicsPipeline();
 		createFramebuffers();
 		createCommandPool();
 		createVertexBuffer();
 		createIndexBuffer();
+		createUniformBuffers();
+		createDescriptorPool();
 		createCommandBuffers();
 		createSyncObjects();
 	}
@@ -384,6 +404,22 @@ private:
 
 	}
 
+	void createUniformBuffers() {
+		VkDeviceSize bufferSize = sizeof(UniformBufferObject);
+		uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+		uniformBuffersMemory.resize(MAX_FRAMES_IN_FLIGHT);
+		uniformBuffersMapped.resize(MAX_FRAMES_IN_FLIGHT);
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			createBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+				VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, uniformBuffers[i],
+				uniformBuffersMemory[i]);
+			vkMapMemory(device, uniformBuffersMemory[i], 0, bufferSize,
+				0, &uniformBuffersMapped[i]);
+		}
+
+	}
+
 	// Finds the correct memory type from the physical device that meets the
 	// requirements of the the buffer and the application.
 	uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags
@@ -406,6 +442,33 @@ private:
 		throw std::runtime_error("failed to find suitable memory type!");
 	}
 
+	// Defines the details for descriptor binding used in the shaders for pipeline creation.
+	void createDescriptorSetLayout() {
+		// Creates the required struct and assigns attributes.
+		VkDescriptorSetLayoutBinding uboLayoutBinding{};
+		uboLayoutBinding.binding = 0;
+		uboLayoutBinding.descriptorType =
+			VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		uboLayoutBinding.descriptorCount = 1;
+		uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+		uboLayoutBinding.pImmutableSamplers = nullptr;
+
+		VkDescriptorSetLayoutCreateInfo layoutInfo{};
+		layoutInfo.sType =
+			VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+		layoutInfo.bindingCount = 1;
+		layoutInfo.pBindings = &uboLayoutBinding;
+		if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr,
+			&descriptorSetLayout) != VK_SUCCESS) {
+			throw std::runtime_error("failed to create descriptor set layout!");
+		}
+
+		VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+		pipelineLayoutInfo.sType =
+			VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+		pipelineLayoutInfo.setLayoutCount = 1;
+		pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
+	}
 
 	// The graphics pipeline consists of the multiple shader stages and layouts.
 	// The vertex shader and fragment shaders are created in this order.
@@ -1021,7 +1084,6 @@ private:
 	// command buffer begin info, render pass info, and viewport info. Binds the render
 	// pass info, sets the viewport and scissor info, then exexutes the draw command
 	// before ending the render pass.
-
 	void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
 		VkCommandBufferBeginInfo beginInfo{};
 		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1106,6 +1168,8 @@ private:
 		vkResetCommandBuffer(commandBuffers[currentFrame], 0);
 		recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
 
+		updateUniformBuffer(currentFrame);
+
 		VkSubmitInfo submitInfo{};
 		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 		VkSemaphore waitSemaphores[] = { imageAvailableSemaphores[currentFrame] };
@@ -1147,6 +1211,59 @@ private:
 		}
 
 		currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+	}
+
+	void updateUniformBuffer(uint32_t currentImage) {
+		// The chrono library is used to perform timekeeping independent of the frame rate.
+		static auto startTime = std::chrono::high_resolution_clock::now();
+
+		auto currentTime = std::chrono::high_resolution_clock::now();
+		float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime -
+				startTime).count();
+
+		// Rotates the model around the Z-axis at a rate of 90 degrees per second. The view is
+		// from above at a 45 degree angle using a perspective projection with a vertical 45 
+		// degree field of view.
+		UniformBufferObject ubo{};
+		ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f),
+			glm::vec3(0.0f, 0.0f, 1.0f));
+		ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f,
+			0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+		ubo.proj = glm::perspective(glm::radians(45.0f),
+			swapChainExtent.width / (float)swapChainExtent.height, 0.1f,
+			10.0f);
+
+		// Inverts the Y-coordinate of the projection matrix. The GLM library was designed for 
+		// OpenGL, where the Y-coordinate of the of the clip coordinates is inverted. This
+		// change prevents the image from rendering upside-down.
+		ubo.proj[1][1] *= -1;
+
+		// The data is directly copied to the current uniform buffer without the need of a
+		// staging buffer.
+		memcpy(uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
+	}
+
+	// Creates descriptor pools in which descriptor sets are allocated from.
+	void createDescriptorPool() {
+		VkDescriptorPoolSize poolSize{};
+		poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		poolSize.descriptorCount =
+			static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+
+		VkDescriptorPoolCreateInfo poolInfo{};
+		poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+		poolInfo.poolSizeCount = 1;
+		poolInfo.pPoolSizes = &poolSize;
+		poolInfo.maxSets = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+
+		if (vkCreateDescriptorPool(device, &poolInfo, nullptr,
+			&descriptorPool) != VK_SUCCESS) {
+			throw std::runtime_error("failed to create descriptor pool!");
+		}
+
+	}
+
+	void createDescriptorSets() {
 	}
 
 	void createSyncObjects() {
@@ -1280,6 +1397,13 @@ private:
 	// in order to avoid errors and/or crashes (created first, last destroyed).
 	void cleanup() {
 		cleanupSwapChain();
+
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			vkDestroyBuffer(device, uniformBuffers[i], nullptr);
+			vkFreeMemory(device, uniformBuffersMemory[i], nullptr);
+		}
+
+		vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
 
 		vkDestroyBuffer(device, indexBuffer, nullptr);
 		vkFreeMemory(device, indexBufferMemory, nullptr);
