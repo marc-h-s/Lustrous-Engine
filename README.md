@@ -3,8 +3,9 @@
 This is the Lustrous Engine Repository, an application that utilizes the Vulkan API to
 render images. The initial development was created using the [Vulkan Tutorial](https://github.com/Overv/VulkanTutorial) by [Overv](https://github.com/Overv).
 
-# 
-![vulkan-texture-demo](images/vulkan-texture-demo.webp)
+#
+![vulkan-texture-demo](images/vulkan-depth-demo.webp)
+
 
 The program creates renders an rectangle with an applied texture. This is a rudimentary demonstration
 for the Vulkan API. The program currently initializes the API and only implements the required functions 
