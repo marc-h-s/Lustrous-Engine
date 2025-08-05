@@ -14,8 +14,17 @@ to perform the render.
 This application is currently in development and its purpose is for me to learn graphics API and the graphics pipeline. The
 Vulkan API was chosen for its cross-compatibility, feature support, and configurability.
 
+### Features
+
+#### Mipmapping
+![vulkan-mipmap-demo](images/vulkan-mipmap-demo.png)
+
 Further updates to this application includes suppoprt for: 
 - Lighting
 - Shadows
-- Mipmaps
+- Instanced Rendering
+- Dynamic Uniforms
+- Compute Shaders
+- Pipeline Cache
+- Multi-threaded Command Buffer Generation
 - And more
