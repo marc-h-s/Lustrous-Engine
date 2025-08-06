@@ -19,6 +19,9 @@ Vulkan API was chosen for its cross-compatibility, feature support, and configur
 #### Mipmapping
 ![vulkan-mipmap-demo](images/vulkan-mipmap-demo.png)
 
+#### Multisample Anti-Aliasing
+![vulkan-msaa-demo](images/vulkan-msaa-demo.png)
+
 Further updates to this application includes suppoprt for: 
 - Lighting
 - Shadows
